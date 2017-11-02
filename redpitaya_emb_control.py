@@ -350,7 +350,8 @@ class RedpitayaControl(object):
         return ttime
 
     def get_trigger_wait_status(self):
-        trig_status = self.osc[0].status_trigger()
+        with self.lock:
+            trig_status = self.redpitaya_data.triggerWait
         return trig_status
 
     def get_running_status(self):
@@ -392,6 +393,7 @@ class RedpitayaControl(object):
                     self.trigger_time = 0.0
                 update_data = False
             time.sleep(0.001)
+        root.debug("Exiting wait_for_trigger")
         self.trigger_time = 0.0
         self.stop()
 

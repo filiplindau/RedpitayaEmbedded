@@ -72,6 +72,7 @@ class RedpitayaEmbeddedDS(PyTango.Device_4Impl):
         self.measurement_strings = ['max(w1)', 'max(w2)', 'w1.sum()', 'w2.sum()']
         self.measurement_data = np.array([0.0, 0.0, 0.0, 0.0])
         self.redpitaya_data = rpc.RedPitayaData()
+        self.redpitaya_data.triggerCounter1 = -1
         self.state_thread = None
         self.command_queue = None
         self.statehandler_dict = None
@@ -301,6 +302,9 @@ class RedpitayaEmbeddedDS(PyTango.Device_4Impl):
                         self.set_state(PyTango.DevState.FAULT)
                     self.debug_stream('Acquiring waveform done.')
                     self.redpitaya_data.triggerWait = self.oscilloscope.get_trigger_wait_status()
+                    self.debug_stream("Trigger wait: {0}".format(self.redpitaya_data.triggerWait))
+                    self.debug_stream("Trigger counter: {0}, saved counter {1}".format(
+                        self.oscilloscope.get_trigger_counter(1), self.redpitaya_data.triggerCounter1))
                     # Check if we got a fresh trig event:
                     if self.redpitaya_data.triggerCounter1 != self.oscilloscope.get_trigger_counter(1):
                         # Yes, so flag it as not waiting for trigger and update timestamp
@@ -310,7 +314,7 @@ class RedpitayaEmbeddedDS(PyTango.Device_4Impl):
                         self.redpitaya_data.waveform1 = w1
                         w2 = self.oscilloscope.get_waveform(2)
                         self.redpitaya_data.waveform2 = w2
-                        t = self.oscilloscope.redPitayaData.timevector
+                        t = self.oscilloscope.redpitaya_data.timevector
                         self.redpitaya_data.timevector = t
                         self.redpitaya_data.triggerCounter1 = self.oscilloscope.get_trigger_counter(1)
                         self.redpitaya_data.triggerCounter2 = self.oscilloscope.get_trigger_counter(2)
