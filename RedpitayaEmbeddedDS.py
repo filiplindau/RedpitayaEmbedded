@@ -341,16 +341,16 @@ class RedpitayaEmbeddedDS(PyTango.Device_4Impl):
                         self.redpitaya_data.triggerCounter2 = self.oscilloscope.get_trigger_counter(2)
                         self.debug_stream('Waveforms gotten.')
                         dt = 1/self.redpitaya_data.sampleRate
-                        m_i1 = min(self.redpitaya_data.recordLength,
+                        m1_i = min(self.redpitaya_data.recordLength,
                                    max(0, np.int((self.marker_x_data[0] - t[0]) / dt)))
-                        m_i2 = min(self.redpitaya_data.recordLength,
+                        m2_i = min(self.redpitaya_data.recordLength,
                                    max(0, np.int((self.marker_x_data[1] - t[0]) / dt)))
-                        m1 = w1[m_i1]
-                        m2 = w2[m_i2]
-                        m1_1 = w1[m_i1]
-                        m1_2 = w2[m_i1]
-                        m2_1 = w1[m_i2]
-                        m2_2 = w2[m_i2]
+                        m1 = w1[m1_i]
+                        m2 = w2[m2_i]
+                        m1_1 = w1[m1_i]
+                        m1_2 = w2[m1_i]
+                        m2_1 = w1[m2_i]
+                        m2_2 = w2[m2_i]
                         # Calculate measurements
                         for i, s in enumerate(self.measurement_strings):
                             try:
