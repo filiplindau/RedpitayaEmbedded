@@ -33,7 +33,8 @@
 
 import PyTango
 import sys
-import redpitaya_emb_control as rpc
+import redpitaya_emb_control_v094 as rpc
+# import redpitaya_emb_control as rpc
 import threading
 import time
 import numpy as np
@@ -69,8 +70,10 @@ class RedpitayaEmbeddedDS(PyTango.Device_4Impl):
     # ------------------------------------------------------------------
     def __init__(self, cl, name):
         self.oscilloscope = rpc.RedpitayaControl()
-        self.measurement_strings = ['max(w1)', 'max(w2)', 'w1.sum()', 'w2.sum()']
+        self.measurement_strings = ['max(w1)', 'm1_1', 'w1.sum()', 'w2.sum()']
         self.measurement_data = np.array([0.0, 0.0, 0.0, 0.0])
+        self.marker_x_data = [0.0, 0.0]
+        self.marker_y_data = [0.0, 0.0]
         self.redpitaya_data = rpc.RedPitayaData()
         self.redpitaya_data.triggerCounter1 = -1
         self.state_thread = None
@@ -107,6 +110,15 @@ class RedpitayaEmbeddedDS(PyTango.Device_4Impl):
             pass
 
         try:
+            self.debug_stream("In init_device: InputRange property: {0}".format(self.InputRange))
+            if self.InputRange == "LV":
+                self.debug_stream("In init_device: Low voltage input range")
+                inp_range = 1.0
+            else:
+                self.debug_stream("In init_device: High voltage input range")
+                inp_range = 20.0
+            self.oscilloscope = rpc.RedpitayaControl(inp_range, self.FPGABitFile)
+            self.debug_stream("In init_device: Oscilloscope object created")
             self.measurement_strings
         except:
             self.measurement_strings = ['max(w1)', 'max(w2)', 'w1.sum()', 'w2.sum()']
@@ -136,7 +148,8 @@ class RedpitayaEmbeddedDS(PyTango.Device_4Impl):
     #    Always excuted hook method
     # ------------------------------------------------------------------
     def always_executed_hook(self):
-        self.info_stream(''.join(("In ", self.get_name(), "::always_excuted_hook()")))
+        pass
+        # self.info_stream(''.join(("In ", self.get_name(), "::always_excuted_hook()")))
 
     def statehandler_dispatcher(self):
         prev_state = self.get_state()
@@ -157,6 +170,7 @@ class RedpitayaEmbeddedDS(PyTango.Device_4Impl):
 
         self.oscilloscope_data = None
         try:
+            self.oscilloscope.connect()
             self.set_state(PyTango.DevState.INIT)
             self.info_stream('... connected')
         except Exception as expt:
@@ -171,6 +185,7 @@ class RedpitayaEmbeddedDS(PyTango.Device_4Impl):
             except:
                 pass
             try:
+                self.oscilloscope.connect()
                 self.set_state(PyTango.DevState.INIT)
                 self.info_stream('... connected')
             except Exception as expt:
@@ -199,8 +214,8 @@ class RedpitayaEmbeddedDS(PyTango.Device_4Impl):
                 self.set_status(s_status)
                 self.info_stream(s)
                 self.oscilloscope.init_scope()
-            except Exception as e:
-                err_msg = ''.join(('In initHandler: could not initialize scope settings:', str(e)))
+            except Exception as expt:
+                err_msg = ''.join(('In initHandler: could not initialize scope settings:', str(expt)))
                 self.error_stream(err_msg)
                 exit_init_flag = False
                 time.sleep(init_timeout)
@@ -231,6 +246,10 @@ class RedpitayaEmbeddedDS(PyTango.Device_4Impl):
 
             # Start watchdog
             self.reset_watchdog()
+
+            self.info_stream("Found {0} items in queue".format(self.command_queue.qsize()))
+            while self.command_queue.empty() is False:
+                self.check_commands()
 
     def standby_handler(self, prev_state):
         self.info_stream('Entering standbyHandler')
@@ -295,7 +314,9 @@ class RedpitayaEmbeddedDS(PyTango.Device_4Impl):
                     self.debug_stream('Acquiring waveform...')
                     # Check if scope is alive:
                     try:
-                        self.oscilloscope.get_running_status()
+                        run_stat = self.oscilloscope.get_running_status()
+                        if run_stat is False:
+                            self.set_state(PyTango.DevState.STANDBY)
                         self.reset_watchdog()
                     except Exception as expt:
                         self.error_stream(str(expt))
@@ -319,6 +340,17 @@ class RedpitayaEmbeddedDS(PyTango.Device_4Impl):
                         self.redpitaya_data.triggerCounter1 = self.oscilloscope.get_trigger_counter(1)
                         self.redpitaya_data.triggerCounter2 = self.oscilloscope.get_trigger_counter(2)
                         self.debug_stream('Waveforms gotten.')
+                        dt = 1/self.redpitaya_data.sampleRate
+                        m_i1 = min(self.redpitaya_data.recordLength,
+                                   max(0, np.int((self.marker_x_data[0] - t[0]) / dt)))
+                        m_i2 = min(self.redpitaya_data.recordLength,
+                                   max(0, np.int((self.marker_x_data[1] - t[0]) / dt)))
+                        m1 = w1[m_i1]
+                        m2 = w2[m_i2]
+                        m1_1 = w1[m_i1]
+                        m1_2 = w2[m_i1]
+                        m2_1 = w1[m_i2]
+                        m2_2 = w2[m_i2]
                         # Calculate measurements
                         for i, s in enumerate(self.measurement_strings):
                             try:
@@ -417,6 +449,7 @@ class RedpitayaEmbeddedDS(PyTango.Device_4Impl):
             elif cmd.command == 'writeRecordLength':
                 try:
                     self.oscilloscope.set_record_length(cmd.data)
+                    self.redpitaya_data.recordLength = cmd.data
                 except ValueError as expt:
                     self.error_stream(''.join(('ValueError: ', str(expt))))
                 except Exception as expt:
@@ -436,6 +469,7 @@ class RedpitayaEmbeddedDS(PyTango.Device_4Impl):
                 dec_array = np.array([1, 8, 64, 1024, 8192, 16384])
                 sample_rate_array = 125e6 / dec_array
                 sample_index = max(0, np.argmin(sample_rate_array > cmd.data) - 1)
+                self.redpitaya_data.sampleRate = sample_rate_array[sample_index]
                 self.info_stream('writeSampleRate:')
                 self.info_stream(''.join(('sampleIndex: ', str(sample_index))))
                 try:
@@ -474,7 +508,7 @@ class RedpitayaEmbeddedDS(PyTango.Device_4Impl):
                 self.measurement_strings[3] = cmd.data
 
             elif cmd.command == 'start':
-
+                self.oscilloscope.start()
                 self.set_state(PyTango.DevState.ON)
 #                 self.startHardwareThread()
 
@@ -541,7 +575,8 @@ class RedpitayaEmbeddedDS(PyTango.Device_4Impl):
     #    Read Attribute Hardware
     # ------------------------------------------------------------------
     def read_attr_hardware(self, data):
-        self.info_stream(''.join(("In ", self.get_name(), "::read_attr_hardware()")))
+        pass
+        # self.info_stream(''.join(("In ", self.get_name(), "::read_attr_hardware()")))
 
     # ------------------------------------------------------------------
     #    Read TriggerSource attribute
@@ -551,8 +586,8 @@ class RedpitayaEmbeddedDS(PyTango.Device_4Impl):
 
         #    Add your own code here
 
-        attr__triggersource_read = self.oscilloscope.get_triggersource()
-        attr.set_value(attr__triggersource_read)
+        attr_triggersource_read = self.oscilloscope.get_triggersource()
+        attr.set_value(attr_triggersource_read)
 
     # ------------------------------------------------------------------
     #    Write TriggerSource attribute
@@ -727,6 +762,26 @@ class RedpitayaEmbeddedDS(PyTango.Device_4Impl):
             return False
         return True
 
+# ------------------------------------------------------------------
+#    Read TriggerRate attribute
+# ------------------------------------------------------------------
+    def read_TriggerRate(self, attr):
+        self.info_stream(''.join(("In ", self.get_name(), "::read_TriggerRate()")))
+
+        #    Add your own code here
+
+        attr_TriggerRate_read = self.oscilloscope.get_trigger_rate()
+        attr.set_value(attr_TriggerRate_read)
+
+
+# ---- TriggerRate attribute State Machine -----------------
+
+    def is_TriggerRate_allowed(self, req_type):
+        if self.get_state() in []:
+            #     End of Generated Code
+            #     Re-Start of Generated Code
+            return False
+        return True
 
 # ------------------------------------------------------------------
 #    Read RecordLength attribute
@@ -737,6 +792,7 @@ class RedpitayaEmbeddedDS(PyTango.Device_4Impl):
         #    Add your own code here
 
         attr_RecordLength_read = self.oscilloscope.get_record_length()
+        self.redpitaya_data.recordLength = attr_RecordLength_read
         attr.set_value(attr_RecordLength_read)
 
 
@@ -775,7 +831,9 @@ class RedpitayaEmbeddedDS(PyTango.Device_4Impl):
                    3: 1024,
                    4: 8192,
                    5: 16384}
-        attr_SampleRate_read = 125e6 / decDict[df]
+        # attr_SampleRate_read = 125e6 / decDict[df]
+        attr_SampleRate_read = 125e6 / df
+        self.redpitaya_data.sampleRate = attr_SampleRate_read
         attr.set_value(attr_SampleRate_read)
 
 
@@ -1093,6 +1151,109 @@ class RedpitayaEmbeddedDS(PyTango.Device_4Impl):
             return False
         return True
 
+# ------------------------------------------------------------------
+#    Read Marker1x attribute
+# ------------------------------------------------------------------
+    def read_Marker1x(self, attr):
+        self.info_stream(''.join(("In ", self.get_name(), "::read_Marker1x()")))
+        attr_read = self.marker_x_data[0]
+        attr.set_value(attr_read)
+
+# ------------------------------------------------------------------
+#    Write Marker1x attribute
+# ------------------------------------------------------------------
+    def write_Marker1x(self, attr):
+        self.info_stream(''.join(("In ", self.get_name(), "::write_Marker1x()")))
+        data = attr.get_write_value()
+        self.marker_x_data[0] = data
+        self.info_stream(''.join(("Attribute value = ", str(data))))
+
+# ---- Marker1x attribute State Machine -----------------
+    def is_Marker1x_allowed(self, req_type):
+        if self.get_state() in []:
+            #     End of Generated Code
+            #     Re-Start of Generated Code
+            return False
+        return True
+
+# ------------------------------------------------------------------
+#    Read Marker2x attribute
+# ------------------------------------------------------------------
+    def read_Marker2x(self, attr):
+        self.info_stream(''.join(("In ", self.get_name(), "::read_Marker2x()")))
+        attr_read = self.marker_x_data[1]
+        attr.set_value(attr_read)
+
+# ------------------------------------------------------------------
+#    Write Marker2x attribute
+# ------------------------------------------------------------------
+
+    def write_Marker2x(self, attr):
+        self.info_stream(''.join(("In ", self.get_name(), "::write_Marker2x()")))
+        data = attr.get_write_value()
+        self.marker_x_data[1] = data
+        self.info_stream(''.join(("Attribute value = ", str(data))))
+
+# ---- Marker2x attribute State Machine -----------------
+
+    def is_Marker2x_allowed(self, req_type):
+        if self.get_state() in []:
+            #     End of Generated Code
+            #     Re-Start of Generated Code
+            return False
+        return True
+
+# ------------------------------------------------------------------
+#    Read Marker1y attribute
+# ------------------------------------------------------------------
+    def read_Marker1y(self, attr):
+        self.info_stream(''.join(("In ", self.get_name(), "::read_Marker1y()")))
+        attr_read = self.marker_y_data[0]
+        attr.set_value(attr_read)
+
+# ------------------------------------------------------------------
+#    Write Marker1y attribute
+# ------------------------------------------------------------------
+    def write_Marker1y(self, attr):
+        self.info_stream(''.join(("In ", self.get_name(), "::write_Marker1y()")))
+        data = attr.get_write_value()
+        self.marker_y_data[0] = data
+        self.info_stream(''.join(("Attribute value = ", str(data))))
+
+# ---- Marker1y attribute State Machine -----------------
+    def is_Marker1y_allowed(self, req_type):
+        if self.get_state() in []:
+            #     End of Generated Code
+            #     Re-Start of Generated Code
+            return False
+        return True
+
+# ------------------------------------------------------------------
+#    Read Marker2y attribute
+# ------------------------------------------------------------------
+    def read_Marker2y(self, attr):
+        self.info_stream(''.join(("In ", self.get_name(), "::read_Marker2y()")))
+        attr_read = self.marker_y_data[1]
+        attr.set_value(attr_read)
+
+# ------------------------------------------------------------------
+#    Write Marker2y attribute
+# ------------------------------------------------------------------
+
+    def write_Marker2y(self, attr):
+        self.info_stream(''.join(("In ", self.get_name(), "::write_Marker2y()")))
+        data = attr.get_write_value()
+        self.marker_y_data[1] = data
+        self.info_stream(''.join(("Attribute value = ", str(data))))
+
+# ---- Marker2y attribute State Machine -----------------
+
+    def is_Marker2y_allowed(self, req_type):
+        if self.get_state() in []:
+            #     End of Generated Code
+            #     Re-Start of Generated Code
+            return False
+        return True
 
 # ==================================================================
 #
@@ -1148,6 +1309,14 @@ class RedPitayaDSClass(PyTango.DeviceClass):
             [PyTango.DevDouble,
              "Timeout for the watchdog resetting the hardware in s",
              [2]],
+        'InputRange':
+            [PyTango.DevString,
+             "Input range setting for the redpitaya. Must be LV or HV",
+             ["LV"]],
+        'FPGABitFile':
+            [PyTango.DevString,
+             "Filename for the bit file to load into the FPGA",
+             ["/opt/redpitaya/fpga/v0.94/fpga.bit"]],
 
         }
 
@@ -1215,6 +1384,13 @@ class RedPitayaDSClass(PyTango.DeviceClass):
              {
                 'description': "True if the scope is waiting for a trigger signal",
             }],
+        'TriggerRate':
+            [[PyTango.DevDouble,
+              PyTango.SCALAR,
+              PyTango.READ],
+             {
+                 'description': "Number of trigger events per second",
+             }],
         'RecordLength':
             [[PyTango.DevLong,
               PyTango.SCALAR,
@@ -1323,6 +1499,43 @@ class RedPitayaDSClass(PyTango.DeviceClass):
              {
                 'description': "Result of measurement",
             }],
+        'Marker1x':
+            [[PyTango.DevDouble,
+              PyTango.SCALAR,
+              PyTango.READ_WRITE],
+             {
+                 'description': "Marker 1 x position",
+                 'Memorized': "true",
+                 'unit': "s",
+             }],
+        'Marker1y':
+            [[PyTango.DevDouble,
+              PyTango.SCALAR,
+              PyTango.READ_WRITE],
+             {
+                 'description': "Marker 1 y position",
+                 'Memorized': "true",
+                 'unit': "V",
+             }],
+        'Marker2x':
+            [[PyTango.DevDouble,
+              PyTango.SCALAR,
+              PyTango.READ_WRITE],
+             {
+                 'description': "Marker 2 x position",
+                 'Memorized': "true",
+                 'unit': "s",
+             }],
+        'Marker2y':
+            [[PyTango.DevDouble,
+              PyTango.SCALAR,
+              PyTango.READ_WRITE],
+             {
+                 'description': "Marker 2 y position",
+                 'Memorized': "true",
+                 'unit': "V",
+             }],
+
 
         }
 

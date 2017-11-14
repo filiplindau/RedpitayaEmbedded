@@ -64,6 +64,7 @@ class RedpitayaControl(object):
         self.stop_trigger_thread_flag = False
         self.trigger_time = 0.0
         self.trigger_timeout = 0.2
+        self.reset_pending = False
 
     def connect(self):
         if self.connected is False:
@@ -132,21 +133,25 @@ class RedpitayaControl(object):
         """
         root.debug("Entering set_trigger_source")
         sp = str(source).lower()
-        if sp in ['ch1', 'channel1', '1']:
-            sp = "channel1"
-            for osc in self.osc:
-                osc.trig_src = self.fpga.trig_src["osc0"]
-        elif sp in ['ch2', 'channel2', '2']:
-            sp = "channel2"
-            for osc in self.osc:
-                osc.trig_src = self.fpga.trig_src["osc1"]
-        elif sp in ['ext', 'external']:
-            sp = 'external'
-            for osc in self.osc:
-                osc.trig_src = self.fpga.trig_src["la"]
-        else:
-            raise ValueError(''.join(('Wrong trigger source ', str(source), ', use ch1, ch2, or ext')))
-        self.redpitaya_data.triggerSource = sp
+        with self.lock:
+            if sp in ['ch1', 'channel1', '1']:
+                sp = "channel1"
+                for osc in self.osc:
+                    osc.trig_src = self.fpga.trig_src["osc0"]
+                    osc.sync_src = self.fpga.sync_src["osc0"]
+            elif sp in ['ch2', 'channel2', '2']:
+                sp = "channel2"
+                for osc in self.osc:
+                    osc.trig_src = self.fpga.trig_src["osc1"]
+                    osc.sync_src = self.fpga.sync_src["osc0"]
+            elif sp in ['ext', 'external']:
+                sp = 'external'
+                for osc in self.osc:
+                    osc.trig_src = self.fpga.trig_src["la"]
+                    osc.sync_src = self.fpga.sync_src["osc0"]
+            else:
+                raise ValueError(''.join(('Wrong trigger source ', str(source), ', use ch1, ch2, or ext')))
+            self.redpitaya_data.triggerSource = sp
         edge = self.redpitaya_data.triggerEdge
         self.set_triggeredge(edge)
 
@@ -180,17 +185,19 @@ class RedpitayaControl(object):
     def set_triggeredge(self, edge):
         root.debug("Entering set_triggeredge")
         sp = str(edge).lower()
-        if sp in ['rising', 'rise', 'r', '0', 'pe']:
-            ed = "pe"
-            for osc in self.osc:
-                osc.edge = "pos"
-        elif sp in ['falling', 'fall', 'f', '1', 'ne']:
-            ed = "ne"
-            for osc in self.osc:
-                osc.edge = "neg"
-        else:
-            raise ValueError(''.join(('Wrong trigger edge ', str(edge), ', use rising, or falling')))
-        self.redpitaya_data.triggerEdge = ed
+        with self.lock:
+            if sp in ['rising', 'rise', 'r', '0', 'pe']:
+                ed = "pe"
+                for osc in self.osc:
+                    osc.edge = "pos"
+            elif sp in ['falling', 'fall', 'f', '1', 'ne']:
+                ed = "ne"
+                for osc in self.osc:
+                    osc.edge = "neg"
+            else:
+                raise ValueError(''.join(('Wrong trigger edge ', str(edge), ', use rising, or falling')))
+            self.reset_pending = True
+            self.redpitaya_data.triggerEdge = ed
 
     def get_triggeredge(self):
         if self.redpitaya_data.triggerEdge == 'pe':
@@ -204,10 +211,12 @@ class RedpitayaControl(object):
             rec_length = 16384
         elif rec_length < 1:
             rec_length = 1
+        # with self.lock:
+        #     for osc in self.osc:
+        #         osc.buffer_size = rec_length
         with self.lock:
-            for osc in self.osc:
-                osc.buffer_size = rec_length
-        self.redpitaya_data.recordLength = rec_length
+            self.redpitaya_data.recordLength = rec_length
+            self.reset_pending = True
         self.set_triggerdelay_time(self.redpitaya_data.triggerDelayTime)
 
     def get_record_length(self):
@@ -230,9 +239,10 @@ class RedpitayaControl(object):
         with self.lock:
             for osc in self.osc:
                 osc.decimation = dec_factor
-        self.redpitaya_data.decimationFactor = dec_factor
-        self.redpitaya_data.sampleRate = self.osc[0].sample_rate
+            self.redpitaya_data.decimationFactor = dec_factor
+            self.redpitaya_data.sampleRate = self.osc[0].sample_rate
         self.set_triggerdelay_time(self.redpitaya_data.triggerDelayTime)
+        self.reset_pending = True
 
     def get_decimation_factor(self):
         return self.redpitaya_data.decimationFactor
@@ -242,7 +252,8 @@ class RedpitayaControl(object):
         dt = 1 / self.redpitaya_data.sampleRate
         min_t = self.redpitaya_data.triggerDelayTime - self.redpitaya_data.recordLength * dt / 2
         max_t = self.redpitaya_data.triggerDelayTime + self.redpitaya_data.recordLength * dt / 2
-        self.redpitaya_data.timevector = np.linspace(min_t, max_t, self.redpitaya_data.recordLength)
+        with self.lock:
+            self.redpitaya_data.timevector = np.linspace(min_t, max_t, self.redpitaya_data.recordLength)
 
     def get_timevector(self):
         return self.redpitaya_data.timevector
@@ -265,7 +276,8 @@ class RedpitayaControl(object):
         with self.lock:
             for osc in self.osc:
                 osc.level = [trig_low, trig_high]
-        self.redpitaya_data.triggerLevel = trig_low
+            self.redpitaya_data.triggerLevel = trig_low
+            self.reset_pending = True
 
     def get_trigger_level(self):
         return self.redpitaya_data.triggerLevel
@@ -273,7 +285,8 @@ class RedpitayaControl(object):
     def set_triggerdelay_time(self, trig_delay):
         """Set trigger delay in s
         """
-        self.redpitaya_data.triggerDelayTime = trig_delay
+        with self.lock:
+            self.redpitaya_data.triggerDelayTime = trig_delay
         trigger_delay_samples = self.redpitaya_data.recordLength / 2.0 + trig_delay * self.redpitaya_data.sampleRate
         if trigger_delay_samples < 0:
             self.set_triggerdelay_samples(0)
@@ -289,7 +302,8 @@ class RedpitayaControl(object):
             for osc in self.osc:
                 osc.trigger_pre = pre_trig
                 osc.trigger_post = post_trig
-        self.redpitaya_data.triggerDelaySamples = trig_delay
+            self.reset_pending = True
+            self.redpitaya_data.triggerDelaySamples = trig_delay
 
     def set_trigger_pos(self, trig_pos):
         with self.lock:
@@ -298,7 +312,8 @@ class RedpitayaControl(object):
             for osc in self.osc:
                 osc.trigger_pre = pre_trig
                 osc.trigger_post = post_trig
-        self.redpitaya_data.triggerDelay = trig_pos / self.redpitaya_data.sampleRate
+            self.redpitaya_data.triggerDelay = trig_pos / self.redpitaya_data.sampleRate
+            self.reset_pending = True
 
     def get_triggerdelay_time(self):
         return self.redpitaya_data.triggerDelayTime
@@ -355,7 +370,11 @@ class RedpitayaControl(object):
         return trig_status
 
     def get_running_status(self):
-        run_status = self.osc[0].status_run()
+        # run_status = self.osc[0].status_run()
+        if self.trigger_thread is not None:
+            run_status = self.trigger_thread.is_alive()
+        else:
+            run_status = False
         return run_status
 
     def wait_for_trigger(self):
@@ -366,6 +385,11 @@ class RedpitayaControl(object):
         update_data = False
         while stop is False:
             with self.lock:
+                if self.reset_pending is True:
+                    for osc in self.osc:
+                        osc.reset()
+                        osc.start()
+                    self.reset_pending = False
                 trig_status = self.osc[0].status_trigger()
                 self.trigger_time = time.time() - start_time
                 if trig_status is True:
@@ -391,6 +415,8 @@ class RedpitayaControl(object):
                         osc.start()
                     start_time = time.time()
                     self.trigger_time = 0.0
+                elif self.redpitaya_data.triggerMode in ["SINGLE"]:
+                    stop = True
                 update_data = False
             time.sleep(0.001)
         root.debug("Exiting wait_for_trigger")
@@ -400,8 +426,8 @@ class RedpitayaControl(object):
     def update_waveforms(self):
         root.debug("Entering update_waveforms")
         with self.lock:
-            sig1 = self.osc[0].data()
-            sig2 = self.osc[1].data()
+            sig1 = self.osc[0].data(self.redpitaya_data.recordLength)
+            sig2 = self.osc[1].data(self.redpitaya_data.recordLength)
             self.redpitaya_data.waveform1 = sig1
             self.redpitaya_data.waveform2 = sig2
             self.redpitaya_data.triggerCounter1 += 1
@@ -419,7 +445,7 @@ class RedpitayaControl(object):
 
 if __name__ == "__main__":
     rpc = RedpitayaControl()
-    rpc.set_trigger_level([0.15, 0.17])
+    rpc.set_trigger_level([0.5, 0.6])
 
 
 
